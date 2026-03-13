@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Condor",
+  "version": "0.1.0",
+  "description": "High level view for maximum success.",
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "chrome_url_overrides": {
+    "newtab": "dist/src/newtab.html"
+  },
+  "permissions": ["storage", "contextMenus", "activeTab"],
+  "host_permissions": ["http://localhost:8000/*"],
+  "commands": {
+    "add-bookmark": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Alt+Shift+S"
+      },
+      "description": "Add current page as bookmark"
+    }
+  }
+}

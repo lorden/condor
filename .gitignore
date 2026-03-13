@@ -1,0 +1,19 @@
+# Node / frontend
+node_modules/
+dist/
+
+# Python / backend
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+backend/.venv/
+.pytest_cache/
+
+# Local data
+data/
+*.db
+
+# Environment files
+.env
+.env.*
