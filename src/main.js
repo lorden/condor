@@ -1,5 +1,14 @@
 import { createApp } from 'vue';
 import App from './App.vue';
+import './styles.css';
+
+// Apply persisted theme synchronously so the page doesn't flash.
+try {
+  const stored = localStorage.getItem('theme');
+  if (stored === 'light' || stored === 'dark') {
+    document.documentElement.dataset.theme = stored === 'light' ? 'light' : '';
+  }
+} catch (_) { /* no-op */ }
 // Debug log: main.js loaded
 console.log('main.js loaded');
 

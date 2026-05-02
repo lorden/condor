@@ -10,3 +10,8 @@ services:
       - ./data:/app/data
     environment:
       DATABASE_PATH: /app/data/condor.db
+      JIRA_BASE_URL: ${JIRA_BASE_URL:?set JIRA_BASE_URL on the host (systemd unit)}
+      JIRA_EMAIL: ${JIRA_EMAIL:?set JIRA_EMAIL on the host (systemd unit)}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:?set JIRA_API_TOKEN on the host (systemd unit)}
+      JIRA_PROJECT: ${JIRA_PROJECT:?set JIRA_PROJECT on the host (systemd unit)}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}

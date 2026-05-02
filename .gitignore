@@ -17,3 +17,6 @@ data/
 # Environment files
 .env
 .env.*
+
+# Local extension manifest (copy from manifest.example.json and fill in your OAuth client_id)
+manifest.json

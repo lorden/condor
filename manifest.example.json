@@ -9,8 +9,12 @@
   "chrome_url_overrides": {
     "newtab": "dist/src/newtab.html"
   },
-  "permissions": ["storage", "contextMenus", "activeTab"],
+  "permissions": ["storage", "contextMenus", "activeTab", "identity", "tabs"],
   "host_permissions": ["http://localhost:8000/*"],
+  "oauth2": {
+    "client_id": "YOUR_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
+  },
   "commands": {
     "add-bookmark": {
       "suggested_key": {

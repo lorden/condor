@@ -32,3 +32,28 @@ class Bookmark(Base):
     last_accessed_at = Column(DateTime, nullable=True, index=True)
 
     tags = relationship('Tag', secondary=bookmark_tags, back_populates='bookmarks')
+    event_links = relationship(
+        'CalendarEventBookmark',
+        back_populates='bookmark',
+        cascade='all, delete-orphan',
+    )
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CalendarEventBookmark(Base):
+    __tablename__ = "calendar_event_bookmarks"
+
+    event_id = Column(String, primary_key=True, index=True)
+    bookmark_id = Column(Integer, ForeignKey('bookmarks.id'), primary_key=True, index=True)
+    event_title = Column(String, nullable=True)
+    event_start = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    bookmark = relationship('Bookmark', back_populates='event_links')
