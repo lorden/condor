@@ -110,8 +110,87 @@ export function listJiraReleases(opts) {
   return fetchJira('/jira/releases', opts);
 }
 
+export function listJiraIncomplete(opts) {
+  return fetchJira('/jira/incomplete', opts);
+}
+
+export function listJiraMyIssues(opts) {
+  return fetchJira('/jira/my-issues', opts);
+}
+
+export function listJiraUnassigned(opts) {
+  return fetchJira('/jira/unassigned', opts);
+}
+
 export function listGitHubPullRequests(opts) {
   return fetchJira('/github/pull-requests', opts);
+}
+
+async function jsonRequest(path, options = {}) {
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const raw = await res.text();
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
+    } catch {
+      // raw text is not JSON — use as-is
+    }
+    throw new Error(detail || `HTTP ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export function listWorkstreams() {
+  return jsonRequest('/workstreams');
+}
+
+export function createWorkstream(name) {
+  return jsonRequest('/workstreams', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function updateWorkstream(id, payload) {
+  return jsonRequest(`/workstreams/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export function deleteWorkstream(id) {
+  return jsonRequest(`/workstreams/${id}`, { method: 'DELETE' });
+}
+
+export function addWorkstreamComment(id, body) {
+  return jsonRequest(`/workstreams/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) });
+}
+
+export function deleteWorkstreamComment(id, commentId) {
+  return jsonRequest(`/workstreams/${id}/comments/${commentId}`, { method: 'DELETE' });
+}
+
+export function addWorkstreamLink(id, url, title) {
+  return jsonRequest(`/workstreams/${id}/links`, { method: 'POST', body: JSON.stringify({ url, title }) });
+}
+
+export function deleteWorkstreamLink(id, linkId) {
+  return jsonRequest(`/workstreams/${id}/links/${linkId}`, { method: 'DELETE' });
+}
+
+export function listCategories() {
+  return jsonRequest('/categories');
+}
+
+export function createCategory(name) {
+  return jsonRequest('/categories', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function updateCategory(id, name) {
+  return jsonRequest(`/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+}
+
+export function deleteCategory(id) {
+  return jsonRequest(`/categories/${id}`, { method: 'DELETE' });
 }
 
 export async function getSettings() {

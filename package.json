@@ -1,10 +1,12 @@
 {
   "name": "condor-extension",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Chrome new tab extension for bookmark management",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "prebuild": "node scripts/sync-version.js",
+    "build": "vite build",
+    "version": "node scripts/sync-version.js && git add manifest.example.json"
   },
   "dependencies": {
     "@carbon/icons-vue": "^10.99.1",

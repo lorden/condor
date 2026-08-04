@@ -39,6 +39,67 @@ class Bookmark(Base):
     )
 
 
+workstream_categories = Table(
+    'workstream_categories',
+    Base.metadata,
+    Column('workstream_id', Integer, ForeignKey('workstreams.id'), primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True),
+)
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)
+
+    workstreams = relationship('Workstream', secondary=workstream_categories, back_populates='categories')
+
+
+class Workstream(Base):
+    __tablename__ = "workstreams"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    archived_at = Column(DateTime, nullable=True)
+
+    comments = relationship(
+        'WorkstreamComment',
+        back_populates='workstream',
+        cascade='all, delete-orphan',
+    )
+    links = relationship(
+        'WorkstreamLink',
+        back_populates='workstream',
+        cascade='all, delete-orphan',
+    )
+    categories = relationship('Category', secondary=workstream_categories, back_populates='workstreams')
+
+
+class WorkstreamComment(Base):
+    __tablename__ = "workstream_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workstream_id = Column(Integer, ForeignKey('workstreams.id'), nullable=False, index=True)
+    body = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    workstream = relationship('Workstream', back_populates='comments')
+
+
+class WorkstreamLink(Base):
+    __tablename__ = "workstream_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workstream_id = Column(Integer, ForeignKey('workstreams.id'), nullable=False, index=True)
+    url = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    workstream = relationship('Workstream', back_populates='links')
+
+
 class Setting(Base):
     __tablename__ = "settings"
 

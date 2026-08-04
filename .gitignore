@@ -20,3 +20,11 @@ data/
 
 # Local extension manifest (copy from manifest.example.json and fill in your OAuth client_id)
 manifest.json
+
+# Great Docs build directory (ephemeral, do not commit)
+great-docs/
+
+# Great Docs versioned-build artifacts
+.great-docs-build/
+.great-docs-cache/
+.great-docs/

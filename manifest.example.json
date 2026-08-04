@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Condor",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "High level view for maximum success.",
   "background": {
     "service_worker": "src/background.js"
@@ -9,11 +9,21 @@
   "chrome_url_overrides": {
     "newtab": "dist/src/newtab.html"
   },
-  "permissions": ["storage", "contextMenus", "activeTab", "identity", "tabs"],
-  "host_permissions": ["http://localhost:8000/*"],
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "identity",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
   "oauth2": {
     "client_id": "YOUR_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
-    "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.readonly"
+    ]
   },
   "commands": {
     "add-bookmark": {
@@ -22,6 +32,28 @@
         "mac": "Alt+Shift+S"
       },
       "description": "Add current page as bookmark"
+    },
+    "add-to-workstream": {
+      "suggested_key": {
+        "default": "Alt+Shift+W",
+        "mac": "Alt+Shift+W"
+      },
+      "description": "Add current page to a workstream"
     }
+  },
+  "action": {
+    "default_title": "Add to workstream",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
 }

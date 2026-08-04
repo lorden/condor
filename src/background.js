@@ -13,6 +13,11 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Add as bookmark (Alt+Shift+S)',
     contexts: ['page', 'link'],
   });
+  chrome.contextMenus.create({
+    id: 'add-to-workstream',
+    title: 'Add to workstream',
+    contexts: ['page', 'link'],
+  });
 });
 
 // Helper function to open bookmark form
@@ -25,32 +30,55 @@ function openBookmarkForm(url, title) {
   chrome.tabs.create({ url: `chrome://newtab?${params.toString()}` });
 }
 
-// Handle keyboard shortcut
+// Handle keyboard shortcuts
 chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'add-bookmark' && command !== 'add-to-workstream') return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
   if (command === 'add-bookmark') {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) {
-      openBookmarkForm(tab.url, tab.title || '');
-    }
+    openBookmarkForm(tab.url, tab.title || '');
+  } else {
+    openWorkstreamLinkPicker(tab.url, tab.title || '', tab.id);
   }
 });
 
+// Toolbar icon: works on pages that swallow the native context menu
+// (Google Docs/Sheets render their own right-click menu).
+chrome.action.onClicked.addListener((tab) => {
+  if (tab?.url) openWorkstreamLinkPicker(tab.url, tab.title || '', tab.id);
+});
+
+// Open the new-tab app on the workstream link picker, remembering the
+// originating tab so the picker can return to it after saving.
+function openWorkstreamLinkPicker(url, title, returnTabId) {
+  const params = new URLSearchParams({
+    addToWorkstream: '1',
+    url: url,
+    title: title,
+  });
+  if (returnTabId !== undefined) params.set('returnTabId', String(returnTabId));
+  chrome.tabs.create({ url: `chrome://newtab?${params.toString()}` });
+}
+
 // Handle context menu click
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== 'add-bookmark' && info.menuItemId !== 'add-to-workstream') return;
+
+  let url, title;
+  if (info.linkUrl) {
+    // Right-clicked on a link
+    url = info.linkUrl;
+    title = info.selectionText || '';
+  } else {
+    // Right-clicked on page
+    url = tab.url;
+    title = tab.title || '';
+  }
+
   if (info.menuItemId === 'add-bookmark') {
-    let url, title;
-
-    if (info.linkUrl) {
-      // Right-clicked on a link
-      url = info.linkUrl;
-      title = info.selectionText || '';
-    } else {
-      // Right-clicked on page
-      url = tab.url;
-      title = tab.title || '';
-    }
-
     openBookmarkForm(url, title);
+  } else {
+    openWorkstreamLinkPicker(url, title, tab?.id);
   }
 });
 
@@ -226,6 +254,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, suggestions });
     })().catch((error) => {
       sendResponse({ ok: false, error: error.message || 'Failed to get suggestions.' });
+    });
+    return true;
+  }
+
+  if (message?.type === 'close-and-return') {
+    (async () => {
+      const returnTabId = Number(message.returnTabId);
+      if (Number.isFinite(returnTabId)) {
+        try {
+          const tab = await chrome.tabs.update(returnTabId, { active: true });
+          if (tab?.windowId !== undefined) {
+            await chrome.windows.update(tab.windowId, { focused: true });
+          }
+        } catch {
+          // The originating tab was closed in the meantime — nothing to focus.
+        }
+      }
+      if (sender?.tab?.id !== undefined) chrome.tabs.remove(sender.tab.id);
+      sendResponse({ ok: true });
+    })().catch((error) => {
+      sendResponse({ ok: false, error: error.message || 'Failed to close and return.' });
     });
     return true;
   }

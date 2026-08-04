@@ -20,6 +20,17 @@ Backend (`backend/`, Python 3.14+, managed with `uv`):
 
 There is no test suite or linter configured.
 
+## Versioning
+
+The extension follows semantic versioning. **`package.json` is the single source of truth**; `scripts/sync-version.js` stamps that version into `manifest.json` and `manifest.example.json` (it runs automatically via the `prebuild` hook and the `npm version` lifecycle — never edit manifest versions by hand).
+
+Bump the version with every user-visible change, in the same commit as the change:
+- **patch** — bug fixes, styling tweaks, copy changes.
+- **minor** — new features that don't break existing behavior (new page, new endpoint, new menu item or shortcut).
+- **major** — breaking changes: destructive DB schema changes, removed features, or manifest permission changes that require user re-consent.
+
+Backend-only changes count too (the backend ships with the repo); use the same rules.
+
 ## Architecture
 
 Three coordinating pieces, communicating across two trust boundaries (extension ↔ backend over HTTP, popup ↔ service worker over `chrome.runtime` messages):

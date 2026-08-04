@@ -2,7 +2,7 @@ import json
 import os
 import time as time_module
 import traceback
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -24,6 +24,7 @@ def run_migrations():
     # Define migrations as (table, column, sql)
     migrations = [
         ("bookmarks", "favicon_url", "ALTER TABLE bookmarks ADD COLUMN favicon_url TEXT"),
+        ("workstreams", "archived_at", "ALTER TABLE workstreams ADD COLUMN archived_at DATETIME"),
         # Add future migrations here:
         # ("bookmarks", "new_column", "ALTER TABLE bookmarks ADD COLUMN new_column TEXT"),
     ]
@@ -342,6 +343,276 @@ def unlink_bookmark_from_event(event_id: str, bookmark_id: int, db: Session = De
     return {"status": "ok"}
 
 
+# Workstreams: manually-tracked streams of work, each with comments, links,
+# and categories. Categories are managed from the settings page.
+
+class CategoryOut(BaseModel):
+    id: int
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CategoryCreate(BaseModel):
+    name: str
+
+
+class WorkstreamCommentOut(BaseModel):
+    id: int
+    body: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkstreamLinkOut(BaseModel):
+    id: int
+    url: str
+    title: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkstreamOut(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    archived_at: Optional[datetime] = None
+    last_comment_at: Optional[datetime] = None
+    comments: List[WorkstreamCommentOut] = Field(default_factory=list)
+    links: List[WorkstreamLinkOut] = Field(default_factory=list)
+    categories: List[CategoryOut] = Field(default_factory=list)
+
+
+class WorkstreamCreate(BaseModel):
+    name: str
+
+
+class WorkstreamUpdate(BaseModel):
+    name: Optional[str] = None
+    category_ids: Optional[List[int]] = None
+    # None = leave untouched; True = archive (stamps archived_at); False = unarchive.
+    archived: Optional[bool] = None
+
+
+class WorkstreamCommentCreate(BaseModel):
+    body: str
+
+
+class WorkstreamLinkCreate(BaseModel):
+    url: str
+    title: Optional[str] = None
+
+
+def _utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Stamp stored-naive-UTC datetimes as UTC so they serialize with an offset."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _workstream_out(workstream: models.Workstream) -> WorkstreamOut:
+    comments = sorted(workstream.comments, key=lambda c: c.created_at, reverse=True)
+    return WorkstreamOut(
+        id=workstream.id,
+        name=workstream.name,
+        created_at=_utc(workstream.created_at),
+        archived_at=_utc(workstream.archived_at),
+        last_comment_at=_utc(comments[0].created_at) if comments else None,
+        comments=[
+            WorkstreamCommentOut(id=c.id, body=c.body, created_at=_utc(c.created_at))
+            for c in comments
+        ],
+        links=[
+            WorkstreamLinkOut(id=l.id, url=l.url, title=l.title, created_at=_utc(l.created_at))
+            for l in sorted(workstream.links, key=lambda l: l.created_at)
+        ],
+        categories=sorted(
+            (CategoryOut.model_validate(c) for c in workstream.categories),
+            key=lambda c: c.name.lower(),
+        ),
+    )
+
+
+def _get_workstream(db: Session, workstream_id: int) -> models.Workstream:
+    workstream = db.query(models.Workstream).filter(models.Workstream.id == workstream_id).first()
+    if not workstream:
+        raise HTTPException(status_code=404, detail="Workstream not found")
+    return workstream
+
+
+@app.get("/workstreams", response_model=List[WorkstreamOut])
+def list_workstreams(db: Session = Depends(get_db)):
+    workstreams = [_workstream_out(w) for w in db.query(models.Workstream).all()]
+    # Most recently commented first; never-commented ones sink, newest first.
+    workstreams.sort(
+        key=lambda w: (w.last_comment_at is None, -(w.last_comment_at or w.created_at).timestamp()),
+    )
+    return workstreams
+
+
+@app.post("/workstreams", response_model=WorkstreamOut)
+def create_workstream(payload: WorkstreamCreate, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Workstream name is required")
+    workstream = models.Workstream(name=name)
+    db.add(workstream)
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.put("/workstreams/{workstream_id}", response_model=WorkstreamOut)
+def update_workstream(workstream_id: int, payload: WorkstreamUpdate, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Workstream name is required")
+        workstream.name = name
+    if payload.category_ids is not None:
+        categories = (
+            db.query(models.Category).filter(models.Category.id.in_(payload.category_ids)).all()
+            if payload.category_ids
+            else []
+        )
+        workstream.categories = categories
+    if payload.archived is not None:
+        if payload.archived and not workstream.archived_at:
+            workstream.archived_at = datetime.utcnow()
+        elif not payload.archived:
+            workstream.archived_at = None
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.delete("/workstreams/{workstream_id}")
+def delete_workstream(workstream_id: int, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    workstream.categories = []
+    db.delete(workstream)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/workstreams/{workstream_id}/comments", response_model=WorkstreamOut)
+def add_workstream_comment(workstream_id: int, payload: WorkstreamCommentCreate, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Comment body is required")
+    db.add(models.WorkstreamComment(workstream_id=workstream.id, body=body))
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.delete("/workstreams/{workstream_id}/comments/{comment_id}", response_model=WorkstreamOut)
+def delete_workstream_comment(workstream_id: int, comment_id: int, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    comment = (
+        db.query(models.WorkstreamComment)
+        .filter(
+            models.WorkstreamComment.id == comment_id,
+            models.WorkstreamComment.workstream_id == workstream.id,
+        )
+        .first()
+    )
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    db.delete(comment)
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.post("/workstreams/{workstream_id}/links", response_model=WorkstreamOut)
+def add_workstream_link(workstream_id: int, payload: WorkstreamLinkCreate, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    url = payload.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Link URL is required")
+    title = (payload.title or "").strip() or None
+    db.add(models.WorkstreamLink(workstream_id=workstream.id, url=url, title=title))
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.delete("/workstreams/{workstream_id}/links/{link_id}", response_model=WorkstreamOut)
+def delete_workstream_link(workstream_id: int, link_id: int, db: Session = Depends(get_db)):
+    workstream = _get_workstream(db, workstream_id)
+    link = (
+        db.query(models.WorkstreamLink)
+        .filter(
+            models.WorkstreamLink.id == link_id,
+            models.WorkstreamLink.workstream_id == workstream.id,
+        )
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    db.delete(link)
+    db.commit()
+    db.refresh(workstream)
+    return _workstream_out(workstream)
+
+
+@app.get("/categories", response_model=List[CategoryOut])
+def list_categories(db: Session = Depends(get_db)):
+    return db.query(models.Category).order_by(models.Category.name).all()
+
+
+@app.post("/categories", response_model=CategoryOut)
+def create_category(payload: CategoryCreate, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required")
+    existing = db.query(models.Category).filter(models.Category.name == name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Category already exists")
+    category = models.Category(name=name)
+    db.add(category)
+    db.commit()
+    db.refresh(category)
+    return category
+
+
+@app.put("/categories/{category_id}", response_model=CategoryOut)
+def update_category(category_id: int, payload: CategoryCreate, db: Session = Depends(get_db)):
+    category = db.query(models.Category).filter(models.Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required")
+    duplicate = (
+        db.query(models.Category)
+        .filter(models.Category.name == name, models.Category.id != category_id)
+        .first()
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Category already exists")
+    category.name = name
+    db.commit()
+    db.refresh(category)
+    return category
+
+
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: int, db: Session = Depends(get_db)):
+    category = db.query(models.Category).filter(models.Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    category.workstreams = []
+    db.delete(category)
+    db.commit()
+    return {"status": "ok"}
+
+
 # Jira: combined stream of comments and status updates for a project.
 # In-memory cache keyed by project key, 10-minute TTL.
 
@@ -654,6 +925,431 @@ async def get_jira_releases(project: Optional[str] = None, refresh: bool = False
         ) from exc
     _jira_releases_cache[project] = (now, releases)
     return JiraReleasesOut(project=project, cached=False, fetched_at=now, releases=releases)
+
+
+# Jira: incomplete issues (missing due date or assignee).
+
+_jira_incomplete_cache: Dict[str, Tuple[float, List[dict], bool]] = {}
+
+# Max incomplete issues to fetch across all pages; beyond this the result is
+# flagged truncated so the UI can show a "+" indicator.
+JIRA_INCOMPLETE_MAX = 1000
+JIRA_INCOMPLETE_PAGE_SIZE = 100
+
+
+class JiraIncompleteIssue(BaseModel):
+    key: str
+    url: str
+    summary: str
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+    created: Optional[str] = None
+    updated: Optional[str] = None
+    issue_type: Optional[str] = None
+    status: Optional[str] = None
+    missing_due_date: bool = False
+    missing_assignee: bool = False
+
+
+class JiraIncompleteOut(BaseModel):
+    project: str
+    cached: bool
+    fetched_at: float
+    issues: List[JiraIncompleteIssue]
+    truncated: bool = False
+
+
+async def _fetch_jira_incomplete(project: str) -> Tuple[List[dict], bool]:
+    base_url = os.environ.get("JIRA_BASE_URL", "").rstrip("/")
+    email = os.environ.get("JIRA_EMAIL", "")
+    token = _get_setting("jira_token") or os.environ.get("JIRA_API_TOKEN", "")
+    if not (base_url and email and token):
+        raise HTTPException(
+            status_code=500,
+            detail="Jira credentials not configured (set JIRA_BASE_URL, JIRA_EMAIL, and a Jira token via /settings or JIRA_API_TOKEN).",
+        )
+
+    safe_project = project.replace('"', '\\"')
+    jql = f'project = "{safe_project}" AND (duedate is EMPTY OR assignee is EMPTY) AND statusCategory != Done ORDER BY created DESC'
+    issue_fields = ["summary", "assignee", "duedate", "created", "updated", "issuetype", "status"]
+
+    auth = (email, token)
+    search_url = f"{base_url}/rest/api/3/search/jql"
+    # The /search/jql endpoint caps a single page at 100, so loop on
+    # nextPageToken until Jira says we're done or we hit our own ceiling.
+    raw_issues: List[dict] = []
+    truncated = False
+    next_page_token: Optional[str] = None
+    async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
+        while True:
+            payload = {
+                "jql": jql,
+                "fields": issue_fields,
+                "maxResults": JIRA_INCOMPLETE_PAGE_SIZE,
+            }
+            if next_page_token:
+                payload["nextPageToken"] = next_page_token
+            response = await client.post(search_url, json=payload)
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Jira credentials are invalid.")
+            if response.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Jira API error: {response.text}")
+            data = response.json()
+            raw_issues.extend(data.get("issues", []))
+            next_page_token = data.get("nextPageToken")
+            if data.get("isLast") or not next_page_token:
+                break
+            if len(raw_issues) >= JIRA_INCOMPLETE_MAX:
+                # More pages remain but we've hit our ceiling.
+                truncated = True
+                break
+
+    if len(raw_issues) > JIRA_INCOMPLETE_MAX:
+        raw_issues = raw_issues[:JIRA_INCOMPLETE_MAX]
+
+    results: List[dict] = []
+    for issue in raw_issues:
+        key = issue.get("key")
+        if not key:
+            continue
+        fields = issue.get("fields") or {}
+        assignee = (fields.get("assignee") or {}).get("displayName")
+        due_date = fields.get("duedate")
+        results.append({
+            "key": key,
+            "url": f"{base_url}/browse/{key}",
+            "summary": fields.get("summary") or "",
+            "assignee": assignee,
+            "due_date": due_date,
+            "created": fields.get("created"),
+            "updated": fields.get("updated"),
+            "issue_type": (fields.get("issuetype") or {}).get("name"),
+            "status": (fields.get("status") or {}).get("name"),
+            "missing_due_date": not due_date,
+            "missing_assignee": not assignee,
+        })
+    return results, truncated
+
+
+@app.get("/jira/incomplete", response_model=JiraIncompleteOut)
+async def get_jira_incomplete(project: Optional[str] = None, refresh: bool = False):
+    project = (project or os.environ.get("JIRA_PROJECT") or "").strip()
+    if not project:
+        raise HTTPException(
+            status_code=400,
+            detail="No Jira project configured. Set JIRA_PROJECT in the backend env or pass `?project=KEY`.",
+        )
+
+    now = time_module.time()
+    cached = _jira_incomplete_cache.get(project)
+    if not refresh and cached and now - cached[0] < JIRA_CACHE_TTL_SECONDS:
+        return JiraIncompleteOut(
+            project=project, cached=True, fetched_at=cached[0], issues=cached[1], truncated=cached[2]
+        )
+
+    try:
+        issues, truncated = await _fetch_jira_incomplete(project)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Jira fetch failed: {exc!r}\n\n{tb}",
+        ) from exc
+    _jira_incomplete_cache[project] = (now, issues, truncated)
+    return JiraIncompleteOut(
+        project=project, cached=False, fetched_at=now, issues=issues, truncated=truncated
+    )
+
+
+# Jira: issues assigned to me, across all projects, excluding done/dropped work.
+
+_jira_my_issues_cache: Dict[str, Tuple[float, List[dict], bool]] = {}
+_jira_sprint_field_id_cache: Optional[str] = None
+
+JIRA_MY_ISSUES_MAX = 500
+JIRA_MY_ISSUES_PAGE_SIZE = 100
+
+
+class JiraMyIssue(BaseModel):
+    key: str
+    url: str
+    summary: str
+    created: Optional[str] = None
+    due_date: Optional[str] = None
+    issue_type: Optional[str] = None
+    status: Optional[str] = None
+    sprint: Optional[str] = None
+
+
+class JiraMyIssuesOut(BaseModel):
+    cached: bool
+    fetched_at: float
+    issues: List[JiraMyIssue]
+    truncated: bool = False
+
+
+async def _resolve_sprint_field_id(client: httpx.AsyncClient, base_url: str) -> Optional[str]:
+    """Look up the custom field id backing Jira Software's "Sprint" field.
+
+    It's a per-site custom field id (not a stable constant across instances),
+    so resolve it once by name/schema and cache it for the process lifetime.
+    """
+    global _jira_sprint_field_id_cache
+    if _jira_sprint_field_id_cache is not None:
+        return _jira_sprint_field_id_cache
+    response = await client.get(f"{base_url}/rest/api/3/field")
+    if response.status_code >= 400:
+        return None
+    for field in response.json():
+        schema = field.get("schema") or {}
+        if schema.get("custom") == "com.pyxis.greenhopper.jira:gh-sprint":
+            _jira_sprint_field_id_cache = field.get("id")
+            return _jira_sprint_field_id_cache
+    return None
+
+
+def _sprint_name_from_field(value: Any) -> Optional[str]:
+    if not isinstance(value, list) or not value:
+        return None
+    active = next((s for s in value if isinstance(s, dict) and s.get("state") == "active"), None)
+    future = next((s for s in value if isinstance(s, dict) and s.get("state") == "future"), None)
+    chosen = active or future or value[-1]
+    return chosen.get("name") if isinstance(chosen, dict) else None
+
+
+async def _fetch_jira_my_issues(project: str) -> Tuple[List[dict], bool]:
+    base_url = os.environ.get("JIRA_BASE_URL", "").rstrip("/")
+    email = os.environ.get("JIRA_EMAIL", "")
+    token = _get_setting("jira_token") or os.environ.get("JIRA_API_TOKEN", "")
+    if not (base_url and email and token):
+        raise HTTPException(
+            status_code=500,
+            detail="Jira credentials not configured (set JIRA_BASE_URL, JIRA_EMAIL, and a Jira token via /settings or JIRA_API_TOKEN).",
+        )
+
+    # `statusCategory != Done` also excludes "Dropped"/"Won't Do"-style
+    # statuses, which Jira workflows normally map into the Done category.
+    jql = "assignee = currentUser() AND statusCategory != Done"
+    if project:
+        safe_project = project.replace('"', '\\"')
+        jql = f'project = "{safe_project}" AND {jql}'
+    jql += " ORDER BY duedate ASC, created DESC"
+
+    auth = (email, token)
+    search_url = f"{base_url}/rest/api/3/search/jql"
+    raw_issues: List[dict] = []
+    truncated = False
+    next_page_token: Optional[str] = None
+    async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
+        sprint_field_id = await _resolve_sprint_field_id(client, base_url)
+        issue_fields = ["summary", "created", "duedate", "issuetype", "status"]
+        if sprint_field_id:
+            issue_fields.append(sprint_field_id)
+
+        while True:
+            payload = {
+                "jql": jql,
+                "fields": issue_fields,
+                "maxResults": JIRA_MY_ISSUES_PAGE_SIZE,
+            }
+            if next_page_token:
+                payload["nextPageToken"] = next_page_token
+            response = await client.post(search_url, json=payload)
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Jira credentials are invalid.")
+            if response.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Jira API error: {response.text}")
+            data = response.json()
+            raw_issues.extend(data.get("issues", []))
+            next_page_token = data.get("nextPageToken")
+            if data.get("isLast") or not next_page_token:
+                break
+            if len(raw_issues) >= JIRA_MY_ISSUES_MAX:
+                truncated = True
+                break
+
+    if len(raw_issues) > JIRA_MY_ISSUES_MAX:
+        raw_issues = raw_issues[:JIRA_MY_ISSUES_MAX]
+
+    results: List[dict] = []
+    for issue in raw_issues:
+        key = issue.get("key")
+        if not key:
+            continue
+        fields = issue.get("fields") or {}
+        results.append({
+            "key": key,
+            "url": f"{base_url}/browse/{key}",
+            "summary": fields.get("summary") or "",
+            "created": fields.get("created"),
+            "due_date": fields.get("duedate"),
+            "issue_type": (fields.get("issuetype") or {}).get("name"),
+            "status": (fields.get("status") or {}).get("name"),
+            "sprint": _sprint_name_from_field(fields.get(sprint_field_id)) if sprint_field_id else None,
+        })
+    return results, truncated
+
+
+@app.get("/jira/my-issues", response_model=JiraMyIssuesOut)
+async def get_jira_my_issues(project: Optional[str] = None, refresh: bool = False):
+    project = (project or "").strip()
+    cache_key = project or "__all__"
+
+    now = time_module.time()
+    cached = _jira_my_issues_cache.get(cache_key)
+    if not refresh and cached and now - cached[0] < JIRA_CACHE_TTL_SECONDS:
+        return JiraMyIssuesOut(cached=True, fetched_at=cached[0], issues=cached[1], truncated=cached[2])
+
+    try:
+        issues, truncated = await _fetch_jira_my_issues(project)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Jira fetch failed: {exc!r}\n\n{tb}",
+        ) from exc
+    _jira_my_issues_cache[cache_key] = (now, issues, truncated)
+    return JiraMyIssuesOut(cached=False, fetched_at=now, issues=issues, truncated=truncated)
+
+
+# Jira: unassigned issues in a project that still need an owner — everything
+# not in a Done-category status and not explicitly Dropped.
+
+_jira_unassigned_cache: Dict[str, Tuple[float, List[dict], bool]] = {}
+
+JIRA_UNASSIGNED_MAX = 2000
+JIRA_UNASSIGNED_PAGE_SIZE = 100
+
+
+class JiraUnassignedIssue(BaseModel):
+    key: str
+    url: str
+    summary: str
+    created: Optional[str] = None
+    updated: Optional[str] = None
+    due_date: Optional[str] = None
+    issue_type: Optional[str] = None
+    status: Optional[str] = None
+    sprint: Optional[str] = None
+
+
+class JiraUnassignedOut(BaseModel):
+    project: str
+    cached: bool
+    fetched_at: float
+    issues: List[JiraUnassignedIssue]
+    truncated: bool = False
+
+
+async def _fetch_jira_unassigned(project: str) -> Tuple[List[dict], bool]:
+    base_url = os.environ.get("JIRA_BASE_URL", "").rstrip("/")
+    email = os.environ.get("JIRA_EMAIL", "")
+    token = _get_setting("jira_token") or os.environ.get("JIRA_API_TOKEN", "")
+    if not (base_url and email and token):
+        raise HTTPException(
+            status_code=500,
+            detail="Jira credentials not configured (set JIRA_BASE_URL, JIRA_EMAIL, and a Jira token via /settings or JIRA_API_TOKEN).",
+        )
+
+    # `statusCategory != Done` drops Done-category statuses; the explicit
+    # `status != "Dropped"` covers a Dropped state that isn't mapped there.
+    safe_project = project.replace('"', '\\"')
+    jql = (
+        f'project = "{safe_project}" AND assignee is EMPTY '
+        'AND statusCategory != Done AND status != "Dropped" '
+        "ORDER BY duedate ASC, created DESC"
+    )
+
+    auth = (email, token)
+    search_url = f"{base_url}/rest/api/3/search/jql"
+    raw_issues: List[dict] = []
+    truncated = False
+    next_page_token: Optional[str] = None
+    async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
+        sprint_field_id = await _resolve_sprint_field_id(client, base_url)
+        issue_fields = ["summary", "created", "updated", "duedate", "issuetype", "status"]
+        if sprint_field_id:
+            issue_fields.append(sprint_field_id)
+
+        while True:
+            payload = {
+                "jql": jql,
+                "fields": issue_fields,
+                "maxResults": JIRA_UNASSIGNED_PAGE_SIZE,
+            }
+            if next_page_token:
+                payload["nextPageToken"] = next_page_token
+            response = await client.post(search_url, json=payload)
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Jira credentials are invalid.")
+            if response.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Jira API error: {response.text}")
+            data = response.json()
+            raw_issues.extend(data.get("issues", []))
+            next_page_token = data.get("nextPageToken")
+            if data.get("isLast") or not next_page_token:
+                break
+            if len(raw_issues) >= JIRA_UNASSIGNED_MAX:
+                truncated = True
+                break
+
+    if len(raw_issues) > JIRA_UNASSIGNED_MAX:
+        raw_issues = raw_issues[:JIRA_UNASSIGNED_MAX]
+
+    results: List[dict] = []
+    for issue in raw_issues:
+        key = issue.get("key")
+        if not key:
+            continue
+        fields = issue.get("fields") or {}
+        results.append({
+            "key": key,
+            "url": f"{base_url}/browse/{key}",
+            "summary": fields.get("summary") or "",
+            "created": fields.get("created"),
+            "updated": fields.get("updated"),
+            "due_date": fields.get("duedate"),
+            "issue_type": (fields.get("issuetype") or {}).get("name"),
+            "status": (fields.get("status") or {}).get("name"),
+            "sprint": _sprint_name_from_field(fields.get(sprint_field_id)) if sprint_field_id else None,
+        })
+    return results, truncated
+
+
+@app.get("/jira/unassigned", response_model=JiraUnassignedOut)
+async def get_jira_unassigned(project: Optional[str] = None, refresh: bool = False):
+    project = (project or os.environ.get("JIRA_PROJECT") or "").strip()
+    if not project:
+        raise HTTPException(
+            status_code=400,
+            detail="No Jira project configured. Set JIRA_PROJECT in the backend env or pass `?project=KEY`.",
+        )
+
+    now = time_module.time()
+    cached = _jira_unassigned_cache.get(project)
+    if not refresh and cached and now - cached[0] < JIRA_CACHE_TTL_SECONDS:
+        return JiraUnassignedOut(
+            project=project, cached=True, fetched_at=cached[0], issues=cached[1], truncated=cached[2]
+        )
+
+    try:
+        issues, truncated = await _fetch_jira_unassigned(project)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Jira fetch failed: {exc!r}\n\n{tb}",
+        ) from exc
+    _jira_unassigned_cache[project] = (now, issues, truncated)
+    return JiraUnassignedOut(
+        project=project, cached=False, fetched_at=now, issues=issues, truncated=truncated
+    )
 
 
 # GitHub: open pull requests that need my review or that I authored.
