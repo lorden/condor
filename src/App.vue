@@ -2167,7 +2167,7 @@ export default {
       this.workstreamsError = null;
       try {
         const created = await createWorkstream(name);
-        this.workstreams = [...this.workstreams, created];
+        this.workstreams = [created, ...this.workstreams];
         this.cancelAddWorkstream();
       } catch (e) {
         this.workstreamsError = e.message || 'Failed to add workstream.';

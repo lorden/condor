@@ -445,9 +445,9 @@ def _get_workstream(db: Session, workstream_id: int) -> models.Workstream:
 @app.get("/workstreams", response_model=List[WorkstreamOut])
 def list_workstreams(db: Session = Depends(get_db)):
     workstreams = [_workstream_out(w) for w in db.query(models.Workstream).all()]
-    # Most recently commented first; never-commented ones sink, newest first.
+    # Most recent activity first: latest comment, or creation time if never commented.
     workstreams.sort(
-        key=lambda w: (w.last_comment_at is None, -(w.last_comment_at or w.created_at).timestamp()),
+        key=lambda w: -(w.last_comment_at or w.created_at).timestamp(),
     )
     return workstreams
 
