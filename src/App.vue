@@ -311,7 +311,7 @@
                     Open All
                   </button>
                 </div>
-                <div class="cds-text-helper">{{ formatEventTime(event.start_time) }}</div>
+                <div class="cds-text-helper">{{ formatEventTimeRange(event) }}</div>
 
                 <div v-if="event.bookmarks && event.bookmarks.length" class="cds-row cds-row--gap-2 cds-row--wrap">
                   <span
@@ -1587,6 +1587,32 @@ export default {
         minute: '2-digit',
         timeZoneName: 'short',
       });
+    },
+    formatEventTimeRange(event) {
+      const start = new Date(event.start_time);
+      const end = new Date(event.end_time);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return this.formatEventTime(event.start_time);
+      }
+      const startText = start.toLocaleString('en-US', {
+        timeZone: 'America/Los_Angeles',
+        weekday: 'short',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const endText = end.toLocaleString('en-US', {
+        timeZone: 'America/Los_Angeles',
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+      });
+      const totalMinutes = Math.round((end - start) / 60000);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      const duration = hours
+        ? (minutes ? `${hours}h ${minutes}m` : `${hours}h`)
+        : `${minutes}m`;
+      return `${startText} – ${endText} (${duration})`;
     },
     formatRelative(value) {
       if (!value) return '';
